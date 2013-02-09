@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+require 'yaml'
+
+class Hash
+	def symbolize_keys
+		self.keys.each do |k|
+			if self[k].is_a?(Hash)
+				self[k] = self[k].symbolize_keys
+			end
+
+			self[k.to_sym] = self[k]
+			self.delete(k)
+		end
+		self
+	end
+end
+
+# Configuration file
+config = File.join(Dir.home, '.gotorc')
+
+# Get the host to connect to
+host = ARGV.shift
+
+# Load configuration file
+config = YAML::load(File.read(config)).symbolize_keys
+
+# Commands
+if host.nil? || host[0..0] == '@'
+	case host
+	when '@add'
+		puts "Not Implemented"
+	when '@remove'
+		puts "Not Implemented"
+	when '@list'
+		puts "Goto host listings"
+		config[:hosts].each do |host, host_conf|
+			if host_conf.is_a?(String)
+				puts "#{host}: #{host_conf}"
+			else
+				port = host_conf[:port] || 22
+				user = host_conf[:user] || `whoami`
+				serv = host_conf[:host]
+				key = host_conf[:key]
+
+				puts "\e[31m#{host}\e[0m: #{user}@#{serv}"
+				puts "\e[31m||\e[0m \e[32m:key\e[0m => \e[32m#{key}\e[0m" unless key.nil?
+				puts "\e[31m||\e[0m \e[32m:port\e[0m => \e[32m#{port}\e[0m"
+			end
+		end
+	else
+		puts 'Usage: goto <host|@add|@remove|@list> [opts ...]'
+	end
+	exit
+end
+
+config[:hosts] = config[:hosts].inject({}) do |new_hosts, (host, values)|
+
+	# Find hosts with ranges or multi servers
+	range_regex = /\{[\w\,\- ]*\}/
+	ranges = host.to_s.scan(range_regex).join
+
+	if ranges.empty?
+		# No ranges use default
+		new_hosts[host] = values
+	else
+		# Split on the commas
+		ranges = ranges[1..-2].split(',')
+
+		# If there are literal ranges get them
+		ranges.collect! do |range|
+			if range.include?('-')
+				r1, r2 = range.split('-').map(&:strip)
+				range = (r1..r2).to_a
+			end
+			range.strip rescue range
+		end
+
+		# Create new server entries in the config
+		ranges.flatten.each do |key|
+			nhost = host.to_s.gsub(range_regex, key).to_sym
+			nvalues = values.clone
+
+			# Do replacing of host info
+			if nvalues.is_a?(String)
+				nvalues.gsub(range_regex, key)
+			else
+				nvalues[:host] = values[:host].gsub(range_regex, key)
+			end
+
+			# Add meta-host to hosts
+			new_hosts[nhost] = nvalues
+		end
+	end
+
+	new_hosts
+end
+
+# Check if host exists
+if config[:hosts][host.to_sym]
+	host_conf = config[:hosts][host.to_sym]
+	if host_conf.is_a?(String)
+		exec("ssh #{host_conf}")
+	else
+		port = host_conf[:port] || 22
+		user = host_conf[:user] || `whoami`
+		serv = host_conf[:host]
+		key = host_conf[:key]
+
+		if serv.nil?
+			puts "\e[31mError\e[0m: #{host} does not have a server"
+			exit
+		end
+
+		command = ['ssh']
+		command << "-i #{key}" unless key.nil?
+		command << "-p #{port}"
+		command << "#{user}@#{serv}"
+
+		exec(command.reject(&:empty?).join(' '))
+	end
+else
+	puts "\e[31mError\e[0m: #{host} not defined in .gotorc"
+end
